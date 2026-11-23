@@ -18,6 +18,7 @@ from xml.sax.saxutils import escape as xml_escape
 
 import requests
 import streamlit as st
+from bs4 import BeautifulSoup
 from pypdf import PdfReader
 import reportlab
 from reportlab.lib import colors
@@ -257,8 +258,51 @@ def extract_claims(pages: list[str]) -> list[Claim]:
     return out[:40]
 
 
+def _unwrap_duckduckgo_url(url: str) -> str:
+    parsed = urlparse(url)
+    is_duckduckgo_redirect = (
+        parsed.hostname == "duckduckgo.com"
+        or (parsed.hostname or "").endswith(".duckduckgo.com")
+    )
+    if is_duckduckgo_redirect and parsed.path.startswith("/l/"):
+        return unquote(parse_qs(parsed.query).get("uddg", [url])[0])
+    return url
+
+
+def _parse_duckduckgo_html(content: str, limit: int) -> list[dict[str, str]]:
+    soup = BeautifulSoup(content, "html.parser")
+    results: list[dict[str, str]] = []
+    for item in soup.select(".result")[:limit]:
+        anchor = item.select_one(".result__a")
+        if anchor:
+            snippet = item.select_one(".result__snippet")
+            results.append({
+                "title": anchor.get_text(" ", strip=True),
+                "url": _unwrap_duckduckgo_url(anchor.get("href", "")),
+                "snippet": snippet.get_text(" ", strip=True) if snippet else "",
+            })
+    return results
+
+
+def _parse_duckduckgo_lite(content: str, limit: int) -> list[dict[str, str]]:
+    soup = BeautifulSoup(content, "html.parser")
+    results: list[dict[str, str]] = []
+    for anchor in soup.select(".result-link"):
+        row = anchor.find_parent("tr")
+        snippet_row = row.find_next_sibling("tr") if row else None
+        snippet = snippet_row.select_one(".result-snippet") if snippet_row else None
+        results.append({
+            "title": anchor.get_text(" ", strip=True),
+            "url": _unwrap_duckduckgo_url(anchor.get("href", "")),
+            "snippet": snippet.get_text(" ", strip=True) if snippet else "",
+        })
+        if len(results) >= limit:
+            break
+    return results
+
+
 def web_search(query: str, limit: int = 5) -> list[dict[str, str]]:
-    """Use Tavily when configured; otherwise use DuckDuckGo HTML search."""
+    """Use Tavily when configured, then try both DuckDuckGo result formats."""
     tavily_key = os.getenv("TAVILY_API_KEY", "").strip()
     if not tavily_key:
         try:
@@ -269,27 +313,25 @@ def web_search(query: str, limit: int = 5) -> list[dict[str, str]]:
         try:
             response = requests.post("https://api.tavily.com/search", json={"api_key": tavily_key, "query": query, "search_depth": "advanced", "max_results": limit, "include_answer": False}, timeout=25)
             response.raise_for_status()
-            return [{"title": x.get("title", "Source"), "url": x.get("url", ""), "snippet": x.get("content", "")} for x in response.json().get("results", [])]
+            results = [{"title": x.get("title", "Source"), "url": x.get("url", ""), "snippet": x.get("content", "")} for x in response.json().get("results", [])]
+            if results:
+                return results[:limit]
         except requests.RequestException:
             pass
-    try:
-        from bs4 import BeautifulSoup  # optional, available on Streamlit Cloud via streamlit
-        response = requests.get("https://html.duckduckgo.com/html/", params={"q": query}, headers=HEADERS, timeout=20)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-        results = []
-        for item in soup.select(".result")[:limit]:
-            a = item.select_one(".result__a")
-            snippet = item.select_one(".result__snippet")
-            if a:
-                url = a.get("href", "")
-                parsed = urlparse(url)
-                if parsed.netloc.endswith("duckduckgo.com") and parsed.path.startswith("/l/"):
-                    url = parse_qs(parsed.query).get("uddg", [url])[0]
-                results.append({"title": a.get_text(" ", strip=True), "url": unquote(url), "snippet": snippet.get_text(" ", strip=True) if snippet else ""})
-        return results
-    except Exception:
-        return []
+    providers = (
+        ("https://html.duckduckgo.com/html/", _parse_duckduckgo_html),
+        ("https://lite.duckduckgo.com/lite/", _parse_duckduckgo_lite),
+    )
+    for endpoint, parse_results in providers:
+        try:
+            response = requests.get(endpoint, params={"q": query}, headers=HEADERS, timeout=20)
+            response.raise_for_status()
+        except requests.RequestException:
+            continue
+        results = parse_results(response.text, limit)
+        if results:
+            return results
+    return []
 
 
 def source_quality(url: str, claim: Claim | None = None) -> tuple[str, str]:
@@ -319,7 +361,6 @@ def source_access_label(source: dict[str, Any], claim: Claim) -> str:
 def fetch_source_text(url: str) -> str:
     """Fetch public article text only; reject private hosts and restrict redirects/body size."""
     try:
-        from bs4 import BeautifulSoup
         current = url
         for _ in range(4):
             parsed = urlparse(current)
@@ -560,7 +601,7 @@ def verify_claim(claim: Claim, limit: int = 5) -> dict[str, Any]:
                     break
     hits = hits[:limit]
     if not hits:
-        return {"status": "False", "confidence": "Low", "explanation": "The live search returned no results. This is unsupported, not proof that the opposite is true.", "real_fact": "No correction could be established from the returned sources.", "sources": []}
+        return {"status": "Needs review", "confidence": "Low", "explanation": "The search providers returned no usable sources, so this claim could not be verified. No results do not prove the claim false; try again or add a search provider key.", "real_fact": "No sources were returned, so no correction could be established.", "sources": []}
 
     # Read the source pages themselves. Search snippets are retained as a
     # fallback, but a snippet alone cannot produce a Verified verdict.
