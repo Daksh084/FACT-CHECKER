@@ -71,7 +71,7 @@ div[data-baseweb="select"] div{font-size:13px!important}
 div[data-testid="stTextInput"] input{font-size:13px!important}
 .claimline{font-size:15px;font-weight:600;line-height:1.65;margin:12px 0;color:#23314a}
 .tag{display:inline-block;border-radius:99px;padding:5px 10px;font:500 10px 'DM Mono';margin:0 6px 0 0;letter-spacing:.04em}
-.verified{background:#e3f6ed;color:#176943}.inaccurate{background:#fff3da;color:#8c5a00}.false{background:#ffebe9;color:#a1362c}.unclear{background:#edf1f6;color:#536175}.reviewed{background:#eeebff;color:#584fc1}.entity{background:#edf0ff;color:#5049a4}
+.verified{background:#e3f6ed;color:#176943}.inaccurate{background:#fff3da;color:#8c5a00}.false{background:#ffebe9;color:#a1362c}.unclear{background:#edf1f6;color:#536175}.entity{background:#edf0ff;color:#5049a4}
 .evidence{border:1px solid #e3e9f0;border-left:3px solid #91a6ba;border-radius:11px;padding:14px 16px;margin:9px 0;background:#fff;color:#4a5870;font-size:13px;line-height:1.65;box-shadow:0 2px 8px rgba(29,51,81,.025)}
 .evidence a{color:#087e72;text-decoration:none;font-weight:700}.evidence a:hover{text-decoration:underline}.small{font-size:12px;color:#8390a2}
 .evidence-head{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
@@ -115,7 +115,7 @@ div[data-baseweb="popover"] *{color:#dceaff!important}
 .inaccurate{background:rgba(255,181,72,.13);color:#ffd07b;border-color:rgba(255,195,92,.23)}
 .false{background:rgba(255,104,119,.13);color:#ff9aa5;border-color:rgba(255,118,133,.23)}
 .unclear{background:rgba(123,154,188,.13);color:#b5c8dd;border-color:rgba(141,171,202,.16)}
-.reviewed,.entity{background:rgba(150,130,255,.14);color:#c6baff;border-color:rgba(173,154,255,.2)}
+.entity{background:rgba(150,130,255,.14);color:#c6baff;border-color:rgba(173,154,255,.2)}
 .evidence{background:linear-gradient(145deg,rgba(15,30,49,.94),rgba(12,25,42,.96));border-color:rgba(123,164,195,.19);border-left-color:#3bcbb5;color:#c0d0e2;box-shadow:0 8px 22px rgba(0,0,0,.12)}
 .source-domain{background:rgba(127,160,190,.11);color:#bad0e5;border:1px solid rgba(126,164,196,.13)}
 .source-title,.evidence a{color:#63e4d0!important}.source-excerpt{color:#aec2d8}
@@ -185,7 +185,7 @@ header[data-testid="stHeader"]{background:rgba(8,11,19,.82)!important;backdrop-f
 .inaccurate{background:rgba(255,182,79,.12)!important;color:#ffd28d!important;border-color:rgba(255,190,93,.2)!important}
 .false{background:rgba(255,102,129,.12)!important;color:#ff9eae!important;border-color:rgba(255,118,142,.2)!important}
 .unclear{background:rgba(129,153,187,.12)!important;color:#bdcce0!important}
-.reviewed,.entity{background:rgba(151,126,255,.14)!important;color:#c9baff!important;border-color:rgba(168,146,255,.22)!important}
+.entity{background:rgba(151,126,255,.14)!important;color:#c9baff!important;border-color:rgba(168,146,255,.22)!important}
 div[data-testid="stSelectbox"] div[data-baseweb="select"]>div,div[data-testid="stTextInput"] input,div[data-testid="stTextArea"] textarea{background:rgba(8,14,25,.78)!important;border:1px solid rgba(129,159,206,.2)!important;border-radius:11px!important;transition:border-color .16s,box-shadow .16s!important}
 div[data-testid="stSelectbox"] div[data-baseweb="select"]>div:focus-within,div[data-testid="stTextInput"] input:focus,div[data-testid="stTextArea"] textarea:focus{border-color:#569cff!important;box-shadow:0 0 0 3px rgba(86,156,255,.13)!important}
 div.stButton>button{background:linear-gradient(105deg,#3478ed,#416ce5 55%,#7356dc)!important;border:1px solid rgba(127,171,255,.42)!important;border-radius:11px!important;box-shadow:0 8px 24px rgba(55,111,232,.25),inset 0 1px rgba(255,255,255,.2)!important;transition:transform .16s,filter .16s,box-shadow .16s!important}
@@ -864,8 +864,8 @@ def run_all(claims: list[Claim], limit: int = 5) -> list[dict[str, Any]]:
     return [results[index] for index in range(len(claims))]
 
 
-def create_pdf_report(filename: str, page_count: int, word_count: int, claims: list[Claim], results: list[dict[str, Any]], reviews: list[dict[str, str]], run_time: str) -> bytes:
-    """Create a multi-page, source-linked PDF with the full review trail."""
+def create_pdf_report(filename: str, page_count: int, word_count: int, claims: list[Claim], results: list[dict[str, Any]], run_time: str) -> bytes:
+    """Create a multi-page, source-linked PDF with the automatic verdicts."""
     fonts_dir = os.path.join(os.path.dirname(reportlab.__file__), "fonts")
     if "FactCheck" not in pdfmetrics.getRegisteredFontNames():
         pdfmetrics.registerFont(TTFont("FactCheck", os.path.join(fonts_dir, "Vera.ttf")))
@@ -888,11 +888,7 @@ def create_pdf_report(filename: str, page_count: int, word_count: int, claims: l
     summary.setStyle(TableStyle([("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#f2f6fa")), ("BOX", (0,0), (-1,-1), .5, colors.HexColor("#e1e8f0")), ("INNERGRID", (0,0), (-1,-1), .4, colors.HexColor("#e1e8f0")), ("VALIGN", (0,0), (-1,-1), "MIDDLE"), ("LEFTPADDING", (0,0), (-1,-1), 9), ("RIGHTPADDING", (0,0), (-1,-1), 7), ("TOPPADDING", (0,0), (-1,-1), 8), ("BOTTOMPADDING", (0,0), (-1,-1), 6)]))
     story += [summary, Spacer(1, 4*mm), p("How to read this report", "FC_H2"), p("Automated verdicts are research triage. An exact figure match is not proof that the claim is correct in context; an unsupported result does not prove the opposite. Confirm definitions, time period, geography and the original source before publishing."), p("Claim-by-claim findings", "FC_H2"), HRFlowable(width="100%", thickness=1, color=colors.HexColor("#dce5ed"), spaceAfter=7)]
     for index, (claim, result) in enumerate(zip(claims, results), 1):
-        review = reviews[index - 1] if index - 1 < len(reviews) else {}
-        verdict = review.get("status") or result["status"]
-        story += [p(f"{index:02d}  /  {verdict.upper()}   ·   {claim.kind.upper()}   ·   PAGE {claim.page}   ·   CONFIDENCE {result.get('confidence', 'Low').upper()}", "FC_Tag"), p(claim.text, "FC_Body"), p("Automated assessment: " + result["explanation"], "FC_Small")]
-        if review:
-            story.append(p("Reviewer decision: " + review.get("status", "") + ("  ·  " + review["note"] if review.get("note") else ""), "FC_Body"))
+        story += [p(f"{index:02d}  /  {result['status'].upper()}   ·   {claim.kind.upper()}   ·   PAGE {claim.page}   ·   CONFIDENCE {result.get('confidence', 'Low').upper()}", "FC_Tag"), p(claim.text, "FC_Body"), p("Automated assessment: " + result["explanation"], "FC_Small")]
         if result.get("real_fact"):
             story += [p("Candidate correction / search lead", "FC_Tag"), p(result["real_fact"], "FC_Body")]
         if result.get("sources"):
@@ -951,7 +947,7 @@ if uploaded:
     doc_id = hashlib.sha256(pdf_bytes).hexdigest()[:20]
     if st.session_state.get("document_id") != doc_id:
         for key in list(st.session_state.keys()):
-            if key in {"results", "checked_claims", "claims", "document_id", "single_result", "single_claim"} or key.startswith(("decision-", "note-", "save-", "review-")):
+            if key in {"results", "checked_claims", "claims", "document_id", "single_result", "single_claim"}:
                 del st.session_state[key]
         st.session_state.document_id = doc_id
     try:
@@ -1048,8 +1044,7 @@ if uploaded:
         for col, label in zip(cols, counts):
             col.metric(label, counts[label])
 
-        reviews = [st.session_state.get(f"review-{idx}", {}) for idx in range(1, len(results) + 1)]
-        pdf_report = create_pdf_report(uploaded.name, len(pages), len(text.split()), checked_claims, results, reviews, st.session_state.get("run_time", ""))
+        pdf_report = create_pdf_report(uploaded.name, len(pages), len(text.split()), checked_claims, results, st.session_state.get("run_time", ""))
         report_name = re.sub(r"[^A-Za-z0-9_-]+", "-", uploaded.name.rsplit(".", 1)[0]).strip("-") or "document"
         st.download_button("⇩  Download detailed PDF report", pdf_report, file_name=f"{report_name}-factcheck-report.pdf", mime="application/pdf")
         st.caption("Verification method: the checker opens live source pages, compares matching evidence text and figures, and looks for conflicting values. A snippet can support a verdict only from an official, established or entity-matching domain; otherwise it remains a review lead. Source publication dates and scope still need human review.")
@@ -1067,18 +1062,17 @@ if uploaded:
         status_filter = list(counts) if status_option == "All verdicts" else [status_option]
         kind_filter = kind_options if kind_option == "All types" else [kind_option]
 
-        st.markdown("### Claim review")
+        st.markdown("### Automatic verdicts")
+        st.caption("Each claim is classified from its retrieved evidence. Direct support or a credible contradiction can be Verified or Inaccurate; related but inconclusive evidence stays Needs review.")
         visible = 0
         for idx, (claim, result) in enumerate(zip(checked_claims, results), 1):
             if result["status"] not in status_filter or claim.kind not in kind_filter or (claim_search and claim_search.casefold() not in claim.text.casefold()):
                 continue
             visible += 1
-            review = st.session_state.get(f"review-{idx}", {})
             status = result["status"]
             status_cls = {"Verified": "verified", "Inaccurate": "inaccurate", "False": "false"}.get(status, "unclear")
-            review_tag = f'<span class="tag reviewed">REVIEWED · {html.escape(review["status"].upper())}</span>' if review else ""
             confidence = result.get("confidence", "Low")
-            st.markdown(f'<div class="claim"><span class="tag {status_cls}">{status.upper()}</span><span class="tag unclear">{claim.kind.upper()}</span><span class="tag unclear">CONFIDENCE · {confidence.upper()}</span><span class="tag unclear">PAGE {claim.page}</span>{review_tag}<div class="claimline">{html.escape(claim.text)}</div><div class="small">{html.escape(result["explanation"])}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="claim"><span class="tag {status_cls}">AUTO · {status.upper()}</span><span class="tag unclear">{claim.kind.upper()}</span><span class="tag unclear">CONFIDENCE · {confidence.upper()}</span><span class="tag unclear">PAGE {claim.page}</span><div class="claimline">{html.escape(claim.text)}</div><div class="small">{html.escape(result["explanation"])}</div></div>', unsafe_allow_html=True)
             # Show correction leads only for unresolved or contradicted claims.
             # For verified claims, source evidence below is clearer than a
             # generic conflicting excerpt that may refer to a different scope.
@@ -1100,12 +1094,6 @@ if uploaded:
                         with source_columns[source_i % 2]:
                             host = html.escape(urlparse(source.get("url", "")).netloc.removeprefix("www."))
                             st.markdown(f'<div class="evidence"><div class="evidence-head"><span class="source-domain">{host}</span><span class="tag {qclass}">{html.escape(quality)}</span></div><a class="source-title" href="{url}" target="_blank" rel="noopener">{title} ↗</a><div class="evidence-head"><span class="tag unclear">{page_state}</span></div><p class="source-excerpt">{snippet}</p></div>', unsafe_allow_html=True)
-            with st.expander("Record reviewer decision", expanded=False):
-                st.radio("Reviewer verdict", ["Verified", "Inaccurate", "False", "Needs review"], key=f"decision-{idx}", horizontal=True, label_visibility="collapsed")
-                st.text_input("Reviewer note / corrected fact", key=f"note-{idx}", placeholder="Record corrected figure, scope or source")
-                if st.button("Save review decision", key=f"save-{idx}"):
-                    st.session_state[f"review-{idx}"] = {"status": st.session_state[f"decision-{idx}"], "note": st.session_state[f"note-{idx}"]}
-                    st.rerun()
         if not visible:
             st.info("No claims match these filters.")
         st.caption("Domain labels are quick source cues, not endorsements. Machine verdicts are triage signals; confirm source context, geography, date and definition before publishing.")
