@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
-from urllib.parse import parse_qs, unquote, urljoin, urlparse
+from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 from xml.sax.saxutils import escape as xml_escape
 
 import requests
@@ -32,7 +32,7 @@ from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer,
 
 APP_NAME = "FactCheck"
 MAX_PDF_MB = 20
-HEADERS = {"User-Agent": "FactCheck/1.0 (+https://factcheck.app; evidence research)"}
+HEADERS = {"User-Agent": "FactCheck/1.1 (+https://github.com/Daksh084/FACT-CHECKER)"}
 
 st.set_page_config(page_title="FactCheck · Truth layer", page_icon="⌕", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""
@@ -235,7 +235,7 @@ def extract_claims(pages: list[str]) -> list[Claim]:
     financial_context = re.compile(r"\b(revenue|profit|cost|valuation|market cap|funding|ARR|MRR|sales|price|investment|USD|EUR|GBP)\b|[$€£₹]", re.I)
     technical_context = re.compile(r"\b(technical|latency|throughput|uptime|accuracy|precision|recall|capacity|bandwidth|API|CPU|GPU|storage|database|model size|parameters|tokens|benchmark|resolution|efficiency|temperature|power consumption|response time|error rate|availability)\b", re.I)
     date_context = re.compile(r"\b(?:19|20)\d{2}\b|\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2}\b|\b\d{1,2}[/-]\d{1,2}[/-](?:\d{2}|\d{4})\b", re.I)
-    measurement_signal = re.compile(r"[$€£₹]|\b\d[\d,.]*\s?(?:%|percent|percentage points?|x|×|ms|milliseconds?|seconds?|minutes?|hours?|days?|weeks?|months?|years?|gb|tb|mb|kb|ghz|mhz|mbps|gbps|watts?|kw|mw|users?|customers?|employees?|requests?/s|rps)\b|\b(grew|increased|decreased|rose|fell|reached|averaged|generated|sold|processed|ranked)\b", re.I)
+    measurement_signal = re.compile(r"[$€£₹]|\b\d[\d,.]*\s?(?:%|percent|percentage points?|x|×|ms|milliseconds?|seconds?|minutes?|hours?|days?|weeks?|months?|years?|meters?|metres?|kilometers?|kilometres?|centimeters?|centimetres?|millimeters?|millimetres?|m|km|cm|mm|feet|foot|ft|inches?|inch|miles?|mi|gb|tb|mb|kb|ghz|mhz|mbps|gbps|watts?|kw|mw|users?|customers?|employees?|requests?/s|rps)\b|\b(grew|increased|decreased|rose|fell|reached|averaged|generated|sold|processed|ranked)\b", re.I)
     for page_no, page in enumerate(pages, start=1):
         normalized = re.sub(r"(?<!\.)\n", " ", page)
         for raw in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9\"'“])|\n+", normalized):
@@ -301,8 +301,71 @@ def _parse_duckduckgo_lite(content: str, limit: int) -> list[dict[str, str]]:
     return results
 
 
+def _wikipedia_entity_query(query: str) -> str:
+    ignored = {"after", "before", "during", "following", "since", "the"}
+    terms = [
+        match.group(0)
+        for match in re.finditer(r"\b[A-Z][a-zA-Z0-9-]{2,}\b", query)
+        if match.group(0).casefold() not in ignored
+    ]
+    return " ".join(dict.fromkeys(terms))
+
+
+def _parse_wikipedia_results(data: dict[str, Any], limit: int) -> list[dict[str, str]]:
+    search_results = data.get("query", {}).get("search", [])
+    results = []
+    for item in search_results[:limit]:
+        title = item.get("title", "").strip()
+        if not title:
+            continue
+        snippet = BeautifulSoup(item.get("snippet", ""), "html.parser").get_text(" ", strip=True)
+        results.append({
+            "title": title,
+            "url": f"https://en.wikipedia.org/wiki/{quote(title.replace(' ', '_'), safe='()_')}",
+            "snippet": snippet,
+        })
+    return results
+
+
+def _search_wikipedia(query: str, limit: int) -> list[dict[str, str]]:
+    entity_query = _wikipedia_entity_query(query)
+    search_query = entity_query or query
+    try:
+        response = requests.get(
+            "https://en.wikipedia.org/w/api.php",
+            params={
+                "action": "query",
+                "list": "search",
+                "srsearch": search_query,
+                "format": "json",
+                "srlimit": min(max(limit, 10), 50),
+            },
+            headers=HEADERS,
+            timeout=15,
+        )
+        response.raise_for_status()
+        data = response.json()
+        search_results = data.get("query", {}).get("search", [])
+        normalized_query = search_query.casefold()
+        search_results = sorted(
+            search_results,
+            key=lambda item: (
+                item.get("title", "").casefold() != normalized_query,
+                normalized_query not in item.get("title", "").casefold(),
+            ),
+        )
+        return _parse_wikipedia_results(
+            {"query": {"search": search_results}},
+            limit,
+        )
+    except (requests.RequestException, ValueError):
+        return []
+
+
 def web_search(query: str, limit: int = 5) -> list[dict[str, str]]:
-    """Use Tavily when configured, then try both DuckDuckGo result formats."""
+    """Use Tavily, DuckDuckGo, and Wikipedia when search results are unavailable."""
+    if limit <= 0:
+        return []
     tavily_key = os.getenv("TAVILY_API_KEY", "").strip()
     if not tavily_key:
         try:
@@ -331,7 +394,7 @@ def web_search(query: str, limit: int = 5) -> list[dict[str, str]]:
         results = parse_results(response.text, limit)
         if results:
             return results
-    return []
+    return _search_wikipedia(query, limit)
 
 
 def source_quality(url: str, claim: Claim | None = None) -> tuple[str, str]:
@@ -403,9 +466,14 @@ def fetch_source_text(url: str) -> str:
             for node in soup.select("script,style,noscript,svg,nav,footer,header,aside,form"):
                 node.decompose()
             main = soup.select_one("article") or soup.select_one("main") or soup.body or soup
-            page_text = main.get_text("\n", strip=True)
+            for row in main.select("tr"):
+                cells = [cell.get_text(" ", strip=True) for cell in row.select("th, td")]
+                if len(cells) > 1:
+                    row.replace_with(f"\n{' — '.join(cells)}\n")
+            page_text = main.get_text(" ", strip=False)
             page_text = re.sub(r"[\t ]+", " ", page_text)
-            return re.sub(r"\n{3,}", "\n\n", page_text)[:20000]
+            page_text = re.sub(r" *\n+ *", "\n", page_text)
+            return re.sub(r"\n{3,}", "\n\n", page_text).strip()[:20000]
     except Exception:
         return ""
     return ""
@@ -508,14 +576,23 @@ def claim_entities(text: str) -> set[str]:
     return {candidate.casefold() for candidate in candidates if candidate.casefold() not in ENTITY_STOPWORDS}
 
 
-def entity_near_number(text: str, start: int, end: int, entities: set[str], window: int = 12) -> bool:
-    if not entities:
-        return True
+def claim_context_near_number(
+    text: str,
+    start: int,
+    end: int,
+    entities: set[str],
+    terms: set[str],
+    primary_entity_title: bool = False,
+    window: int = 12,
+) -> bool:
     words = [(match.group(0).casefold(), match.start(), match.end()) for match in re.finditer(r"[A-Za-z][A-Za-z0-9-]*", text)]
     before = [word for word, _, right in words if right <= start][-window:]
     after = [word for word, left, _ in words if left >= end][:window]
     near = before + after + [word for word, left, right in words if left < end and right > start]
-    return bool(entities & set(near))
+    nearby_words = set(near)
+    return (not entities or entities.issubset(nearby_words) or primary_entity_title) and (
+        not terms or len(terms & nearby_words) >= min(2, len(terms))
+    )
 
 
 MONTHS = {name.casefold(): number for number, names in enumerate([("January", "Jan"), ("February", "Feb"), ("March", "Mar"), ("April", "Apr"), ("May",), ("June", "Jun"), ("July", "Jul"), ("August", "Aug"), ("September", "Sep", "Sept"), ("October", "Oct"), ("November", "Nov"), ("December", "Dec")], 1) for name in names}
@@ -549,7 +626,7 @@ def date_signatures(text: str) -> set[str]:
 
 
 def split_evidence(text: str) -> list[str]:
-    return [part.strip() for part in re.split(r"\n+|(?<=[.!?])\s+|(?<=;)\s+", text) if len(part.strip()) > 30]
+    return [part.strip() for part in re.split(r"\n+|(?<=[.!?])\s+|(?<=;)\s+", text) if len(part.strip()) >= 20]
 
 
 def focused_claim_query(claim: Claim) -> str:
@@ -613,6 +690,8 @@ def verify_claim(claim: Claim, limit: int = 5) -> dict[str, Any]:
 
     claim_tokens = claim_terms(claim.text)
     claim_entity_tokens = claim_entities(claim.text)
+    entity_terms = claim_entity_tokens | {f"{entity}s" for entity in claim_entity_tokens}
+    claim_metric_tokens = claim_tokens - entity_terms
     claim_matches = list(NUMBER_RE.finditer(claim.text))
     claim_facts = []
     for match in claim_matches:
@@ -627,6 +706,7 @@ def verify_claim(claim: Claim, limit: int = 5) -> dict[str, Any]:
     requires_date_match = bool(claim_dates) and (claim.kind == "Date" or not claim_facts or claim.kind in {"Financial", "Technical", "Statistic"})
     if claim.kind == "Date":
         claim_facts = []
+    number_context_terms = claim_metric_tokens if claim_facts else set()
 
     relevant_hits = []
     for hit in hits:
@@ -634,18 +714,56 @@ def verify_claim(claim: Claim, limit: int = 5) -> dict[str, Any]:
         segments = split_evidence(full_text) if full_text else []
         if not segments:
             segments = split_evidence(hit.get("snippet", ""))
+        title = hit.get("title", "").strip()
+        primary_entity = _wikipedia_entity_query(claim.text).casefold()
+        normalized_title = re.sub(r"\s+", " ", title.casefold()).strip()
+        primary_entity_title = normalized_title in {
+            primary_entity,
+            f"the {primary_entity}",
+        }
         ranked = []
-        for segment in segments:
-            overlap = claim_tokens & claim_terms(segment)
-            if len(overlap) >= min(2, max(1, len(claim_tokens))):
-                ranked.append((len(overlap) / max(1, len(claim_tokens)), segment, overlap))
-        ranked.sort(key=lambda item: (item[0], len(item[1])), reverse=True)
+        for raw_segment in segments:
+            segment = f"{title}: {raw_segment}" if title else raw_segment
+            segment_terms = claim_terms(raw_segment)
+            overlap = claim_tokens & segment_terms
+            metric_overlap = claim_metric_tokens & segment_terms
+            required_metric_overlap = (
+                min(2, len(claim_metric_tokens)) if claim_facts else 0
+            )
+            if (
+                len(overlap) >= min(2, max(1, len(claim_tokens)))
+                and len(metric_overlap) >= required_metric_overlap
+            ):
+                ranked.append(
+                    (
+                        len(overlap) / max(1, len(claim_tokens)),
+                        len(metric_overlap),
+                        segment,
+                        raw_segment,
+                    )
+                )
+        ranked.sort(
+            key=lambda item: (item[0], item[1], len(item[2])),
+            reverse=True,
+        )
         if ranked:
-            evidence = [item[1] for item in ranked[:4]]
+            evidence = [item[2] for item in ranked[:4]]
+            raw_evidence = [item[3] for item in ranked[:4]]
             evidence_text = " ".join(evidence)
             records = []
-            for segment in evidence:
-                signatures = [number_signature(match.group(0)) for match in NUMBER_RE.finditer(segment) if entity_near_number(segment, match.start(), match.end(), claim_entity_tokens)]
+            for segment, raw_segment in zip(evidence, raw_evidence):
+                signatures = [
+                    number_signature(match.group(0))
+                    for match in NUMBER_RE.finditer(raw_segment)
+                    if claim_context_near_number(
+                        raw_segment,
+                        match.start(),
+                        match.end(),
+                        claim_entity_tokens,
+                        number_context_terms,
+                        primary_entity_title,
+                    )
+                ]
                 signatures = [item for item in signatures if item[0] != 0]
                 matched = [fact for fact in claim_facts if any(numeric_values_match(value, fact[0]) and same_numeric_family(family, fact[1]) for value, family in signatures)]
                 conflicts = [item for item in signatures if any(same_numeric_family(item[1], fact[1]) for fact in claim_facts) and not any(numeric_values_match(item[0], fact[0]) and same_numeric_family(item[1], fact[1]) for fact in claim_facts)]
@@ -707,8 +825,8 @@ def verify_claim(claim: Claim, limit: int = 5) -> dict[str, Any]:
             status, confidence = "Needs review", "Low"
             explanation = "One relevant source page shows a different value, but independent confirmation was not found. Treat its excerpt as a correction lead and review the date, scope and definition."
     elif not relevant_hits:
-        status, confidence = "False", "Low"
-        explanation = "No relevant evidence was found in the source pages returned by live search. This marks the claim unsupported; lack of evidence alone does not prove it false."
+        status, confidence = "Needs review", "Low"
+        explanation = "The source pages returned by live search did not contain directly relevant evidence. That is not enough to mark the claim false; review the claim or search for a source that addresses it."
         real_fact = "No correction could be established from the retrieved source pages."
     elif not any(hit["page_opened"] for hit in relevant_hits):
         status, confidence = "Needs review", "Low"
