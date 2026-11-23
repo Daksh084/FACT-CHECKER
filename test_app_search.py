@@ -1,4 +1,5 @@
 import os
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -28,6 +29,14 @@ class FakePageResponse(FakeResponse):
         yield self.text.encode()
 
     def close(self) -> None:
+        return None
+
+
+class FakeProgress:
+    def progress(self, *_args, **_kwargs) -> None:
+        return None
+
+    def empty(self) -> None:
         return None
 
 
@@ -190,6 +199,46 @@ class WebSearchTests(unittest.TestCase):
         self.assertEqual(result["status"], "Needs review")
         self.assertEqual(result["confidence"], "Low")
         self.assertEqual(result["sources"], [])
+
+    def test_verify_claim_uses_one_full_depth_query_when_it_finds_enough_sources(self) -> None:
+        claim = app.Claim(
+            "The Bitcoin protocol has a maximum supply limit of 21 million bitcoins.",
+            1,
+            "Statistic",
+        )
+        hits = [
+            {"title": f"Source {index}", "url": f"https://source{index}.example", "snippet": ""}
+            for index in range(6)
+        ]
+
+        def search(_query, limit):
+            return hits[:limit]
+
+        with patch("app.web_search", side_effect=search) as web_search, patch(
+            "app.fetch_source_text", return_value=""
+        ):
+            app.verify_claim(claim, limit=6)
+
+        self.assertEqual(web_search.call_count, 1)
+        self.assertEqual(web_search.call_args.args[1], 6)
+
+    def test_run_all_checks_claims_concurrently_and_preserves_input_order(self) -> None:
+        claims = [
+            app.Claim("First claim has 12 units.", 1, "Statistic"),
+            app.Claim("Second claim has 34 units.", 2, "Statistic"),
+        ]
+        barrier = threading.Barrier(2)
+
+        def verify(claim, _limit):
+            barrier.wait(timeout=1)
+            return {"claim": claim.text}
+
+        with patch("app.verify_claim", side_effect=verify), patch(
+            "app.st.progress", return_value=FakeProgress()
+        ):
+            results = app.run_all(claims, limit=3)
+
+        self.assertEqual([result["claim"] for result in results], [claim.text for claim in claims])
 
 
 if __name__ == "__main__":

@@ -8,7 +8,6 @@ import io
 import os
 import re
 import socket
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
@@ -341,7 +340,7 @@ def _search_wikipedia(query: str, limit: int) -> list[dict[str, str]]:
                 "srlimit": min(max(limit, 10), 50),
             },
             headers=HEADERS,
-            timeout=15,
+            timeout=6,
         )
         response.raise_for_status()
         data = response.json()
@@ -374,7 +373,7 @@ def web_search(query: str, limit: int = 5) -> list[dict[str, str]]:
             pass
     if tavily_key:
         try:
-            response = requests.post("https://api.tavily.com/search", json={"api_key": tavily_key, "query": query, "search_depth": "advanced", "max_results": limit, "include_answer": False}, timeout=25)
+            response = requests.post("https://api.tavily.com/search", json={"api_key": tavily_key, "query": query, "search_depth": "advanced", "max_results": limit, "include_answer": False}, timeout=8)
             response.raise_for_status()
             results = [{"title": x.get("title", "Source"), "url": x.get("url", ""), "snippet": x.get("content", "")} for x in response.json().get("results", [])]
             if results:
@@ -387,7 +386,7 @@ def web_search(query: str, limit: int = 5) -> list[dict[str, str]]:
     )
     for endpoint, parse_results in providers:
         try:
-            response = requests.get(endpoint, params={"q": query}, headers=HEADERS, timeout=20)
+            response = requests.get(endpoint, params={"q": query}, headers=HEADERS, timeout=6)
             response.raise_for_status()
         except requests.RequestException:
             continue
@@ -440,7 +439,7 @@ def fetch_source_text(url: str) -> str:
                 addresses = {item[4][0] for item in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)}
                 if not addresses or any(not ipaddress.ip_address(address).is_global for address in addresses):
                     return ""
-            response = requests.get(current, headers=HEADERS, timeout=(4, 8), allow_redirects=False, stream=True)
+            response = requests.get(current, headers=HEADERS, timeout=(3, 5), allow_redirects=False, stream=True)
             if response.is_redirect or response.is_permanent_redirect:
                 next_url = response.headers.get("Location", "")
                 response.close()
@@ -655,8 +654,8 @@ def focused_claim_query(claim: Claim) -> str:
 def verify_claim(claim: Claim, limit: int = 5) -> dict[str, Any]:
     # Search with the stated value, without it, and with a focused entity/metric
     # query. This reduces confirmation bias and finds first-party references.
-    per_query = max(1, limit // 3)
-    hits = web_search(claim.text, per_query)
+    minimum_sources = min(3, limit)
+    hits = web_search(claim.text, limit)
     broad_query = NUMBER_RE.sub(lambda match: match.group(0) if re.fullmatch(r"(?:19|20)\d{2}", match.group(0).strip()) else " ", claim.text)
     broad_query = re.sub(r"\s+", " ", broad_query).strip(" ,.;:-")
     queries = []
@@ -666,10 +665,11 @@ def verify_claim(claim: Claim, limit: int = 5) -> dict[str, Any]:
     if focused_query.casefold() not in {claim.text.casefold(), broad_query.casefold()}:
         queries.append(focused_query)
     for query in queries:
-        if len(hits) >= limit:
+        if len(hits) >= minimum_sources:
             break
         known = {existing.get("url") or existing.get("title") for existing in hits}
-        for hit in web_search(query, max(1, min(per_query, limit - len(hits)))):
+        search_limit = min(minimum_sources - len(hits), limit - len(hits))
+        for hit in web_search(query, search_limit):
             key = hit.get("url") or hit.get("title")
             if key and key not in known:
                 hits.append(hit)
@@ -845,14 +845,23 @@ def verify_claim(claim: Claim, limit: int = 5) -> dict[str, Any]:
 
 
 def run_all(claims: list[Claim], limit: int = 5) -> list[dict[str, Any]]:
-    results = []
-    bar = st.progress(0, text="Searching live sources…")
-    for i, claim in enumerate(claims):
-        results.append(verify_claim(claim, limit))
-        bar.progress((i + 1) / len(claims), text=f"Checking claim {i + 1} of {len(claims)}")
-        time.sleep(.15)
+    if not claims:
+        return []
+    results: dict[int, dict[str, Any]] = {}
+    bar = st.progress(0, text=f"Searching live sources for {len(claims)} claims…")
+    with ThreadPoolExecutor(max_workers=min(2, len(claims))) as pool:
+        futures = {
+            pool.submit(verify_claim, claim, limit): index
+            for index, claim in enumerate(claims)
+        }
+        for completed, future in enumerate(as_completed(futures), start=1):
+            results[futures[future]] = future.result()
+            bar.progress(
+                completed / len(claims),
+                text=f"Checked {completed} of {len(claims)} claims",
+            )
     bar.empty()
-    return results
+    return [results[index] for index in range(len(claims))]
 
 
 def create_pdf_report(filename: str, page_count: int, word_count: int, claims: list[Claim], results: list[dict[str, Any]], reviews: list[dict[str, str]], run_time: str) -> bytes:
@@ -983,7 +992,7 @@ if uploaded:
         with control_a:
             run_scope = st.radio("Claim selection", ["Check all detected claims", "Choose claims"], horizontal=True, key=f"scope-{doc_id}")
         with control_b:
-            search_depth = st.selectbox("Evidence depth", ["Expanded · 6 sources (recommended)", "Focused · 3 sources"], key=f"depth-{doc_id}", help="Expanded searches test more queries and source leads; focused is faster.")
+            search_depth = st.selectbox("Evidence depth", ["Expanded · up to 6 sources (recommended)", "Focused · up to 3 sources"], key=f"depth-{doc_id}", help="Expanded requests more sources; alternate queries run only when the first search returns fewer than three.")
         claim_labels = [f"p.{c.page} · {c.kind} · {c.text}" for c in claims]
         if run_scope == "Choose claims":
             selected_labels = st.multiselect("Select claims for this run", claim_labels, placeholder="Choose one or more extracted claims")
@@ -1006,7 +1015,7 @@ if uploaded:
         st.caption("Search one statement directly, without adding it to the document findings.")
         with st.form(f"single-claim-form-{doc_id}"):
             manual_claim = st.text_area("Claim to verify", placeholder="Example: The company generated $4.2 billion in revenue in 2024.", height=90, label_visibility="collapsed")
-            manual_depth = st.selectbox("Search depth", ["Expanded · 6 sources (recommended)", "Focused · 3 sources"], key=f"manual-depth-{doc_id}")
+            manual_depth = st.selectbox("Search depth", ["Expanded · up to 6 sources (recommended)", "Focused · up to 3 sources"], key=f"manual-depth-{doc_id}")
             submit_manual = st.form_submit_button("Check this claim", type="primary")
         if submit_manual and manual_claim.strip():
             st.session_state.single_claim = manual_claim.strip()

@@ -11,7 +11,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Set `TAVILY_API_KEY` to use Tavily search. Without it, the app tries DuckDuckGo and then Wikipedia's public search API. For each claim, the checker searches the original wording, a version without the claimed figures, and a focused entity/metric query. It opens result pages where available, compares figures with relevant text, normalizes common units, checks dates, and weighs independent sources. A single weak mismatch or inaccessible source stays in **Needs review**; verified and inaccurate verdicts require directly relevant page text or a recognized source excerpt. Results are still evidence triage: an unsupported claim is not proof of the opposite. Text PDFs are supported; scanned PDF OCR is not included.
+Set `TAVILY_API_KEY` to use Tavily search. Without it, the app tries DuckDuckGo and then Wikipedia's public search API. Each claim first searches its original wording for up to the selected source depth; number-free and focused entity/metric queries run only when fewer than three results are found. Multiple claims are checked two at a time, and provider/page HTTP requests use explicit timeouts to keep long runs responsive. The checker opens result pages where available, compares figures with relevant text, normalizes common units, checks dates, and weighs independent sources. A single weak mismatch or inaccessible source stays in **Needs review**; verified and inaccurate verdicts require directly relevant page text or a recognized source excerpt. Results are still evidence triage: an unsupported claim is not proof of the opposite. Text PDFs are supported; scanned PDF OCR is not included.
 
 ## Deploy on Streamlit Community Cloud
 
